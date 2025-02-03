@@ -1,7 +1,7 @@
 import asyncio
 import time
 import logging
-from aiogram import Bot, Dispatcher, types, Router
+from aiogram import Bot, Dispatcher, types, Router, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -18,49 +18,50 @@ logger = logging.getLogger(__name__)
 
 
 # Подключение к базе данных
-def setup_database():
-    conn = sqlite3.connect("tasks.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE,
-        name TEXT,
-        department TEXT,
-        role TEXT
-    )
-    """
-    )
-    cursor.execute(
-        """
-    CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        department TEXT,
-        title TEXT,
-        description TEXT,
-        created_at TIMESTAMP,
-        completed_at TIMESTAMP,
-        status TEXT,
-        created_by INTEGER
-    )
-    """
-    )
-    cursor.execute(
-        """
-    CREATE TABLE IF NOT EXISTS unauth_users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE,
-        name TEXT,
-        username TEXT
-    )
-    """
-    )
-    conn.commit()
-    conn.close()
+# 
+# def setup_database():
+#     conn = sqlite3.connect("tasks.db")
+#     cursor = conn.cursor()
+#     cursor.execute(
+#         """
+#     CREATE TABLE IF NOT EXISTS users (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         telegram_id INTEGER UNIQUE,
+#         name TEXT,
+#         department TEXT,
+#         role TEXT
+#     )
+#     """
+#     )
+#     cursor.execute(
+#         """
+#     CREATE TABLE IF NOT EXISTS tasks (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         department TEXT,
+#         title TEXT,
+#         description TEXT,
+#         created_at TIMESTAMP,
+#         completed_at TIMESTAMP,
+#         status TEXT,
+#         created_by INTEGER
+#     )
+#     """
+#     )
+#     cursor.execute(
+#         """
+#     CREATE TABLE IF NOT EXISTS unauth_users (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         telegram_id INTEGER UNIQUE,
+#         name TEXT,
+#         username TEXT
+#     )
+#     """
+#     )
+#     conn.commit()
+#     conn.close()
 
 
-setup_database()
+# setup_database()
 
 
 # Состояния FSM
@@ -394,23 +395,26 @@ async def add_task(message: types.Message, state: FSMContext):
 @router.message(AddTaskState.waiting_for_title)
 async def process_task_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
-    await message.answer("Введите описание задачи:")
+    await message.answer("Введите описание задачи\n*Для добавления изображения прикрепите его*")
     await state.set_state(AddTaskState.waiting_for_description)
 
-@router.message(AddTaskState.waiting_for_description)
+@router.message(AddTaskState.waiting_for_description, F.photo | F.text)
 async def process_task_description(message: types.Message, state: FSMContext):
     data = await state.get_data()
     department = data.get("department")
     title = data.get("title")
-    description = message.text
+    description = message.caption
+    image_id = None
+    if message.photo:
+        image_id = message.photo[-1].file_id
     created_by = data.get("created_by")
     created_at = time.strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect("tasks.db")
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO tasks (department, title, description, created_at, status, created_by) VALUES (?, ?, ?, ?, ?, ?)",
-        (department, title, description, created_at, "pending", created_by)
+        "INSERT INTO tasks (department, title, description, created_at, status, created_by, image_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (department, title, description, created_at, "pending", created_by, image_id)
     )
     conn.commit()
     cursor.close()
@@ -418,7 +422,7 @@ async def process_task_description(message: types.Message, state: FSMContext):
 
     await notify_admins(title, description, department)
     await state.clear()
-    await message.answer("Задача успешно добавлена и уведомление отправлено администраторам!")
+    await message.answer(data.get("department") == "manager" if "Задача успешно добавлена и уведомление отправлено администраторам!" else "")
 
 
 
@@ -482,35 +486,50 @@ async def view_tasks(message: types.Message):
         return
 
     role, department = user_data
-    print(role, user_data)
+
+# Определяем SQL-запрос
     if role == "admin":
-        # Администратор видит все задачи
         cursor.execute(
-            "SELECT id, department, title, description FROM tasks WHERE status = 'pending'"
+            "SELECT id, department, title, description, image_id FROM tasks WHERE status = 'pending'"
         )
-        tasks = cursor.fetchall()
-        if not tasks:
-            await message.answer("Нет текущих задач.")
-        else:
-            response = "\n".join(
-                [f"{task[0]}. [{task[1]}] {task[2]} - {task[3]}" for task in tasks]
-            )
-            await message.answer(f"Все текущие задачи:\n{response}")
     else:
-        # Пользователь видит задачи своего отдела
         cursor.execute(
-            "SELECT id, title, description FROM tasks WHERE department = ? AND status = 'pending'",
+            "SELECT id, title, description, image_id FROM tasks WHERE department = ? AND status = 'pending'",
             (department,),
         )
-        tasks = cursor.fetchall()
-        if not tasks:
-            await message.answer("У вас нет текущих задач.")
-        else:
-            response = "\n".join(
-                [f"{task[0]}. {task[1]} - {task[2]}" for task in tasks]
-            )
-            await message.answer(f"Текущие задачи:\n{response}")
+
+    tasks = cursor.fetchall()
     conn.close()
+
+    if not tasks:
+        await message.answer("Нет текущих задач.")
+        return
+
+    # Отправляем задачи с фото, если они есть
+    for task in tasks:
+        task_id = task[0]
+
+        if role == "admin":
+            department = task[1]
+            task_title = task[2]
+            task_description = task[3]
+            image_id = task[4]
+        else:
+            task_title = task[1]
+            task_description = task[2]
+            image_id = task[3]
+
+        # Формируем текст задачи
+        task_text = f"📌{task_id} *{task_title}*\n{task_description}"
+
+        if role == "admin":
+            task_text = f"🏢 [{department}]\n{task_text}"
+
+        # Если есть фото → отправляем его с подписью
+        if image_id:
+            await message.answer_photo(image_id, caption=task_text, parse_mode="Markdown")
+        else:
+            await message.answer(task_text, parse_mode="Markdown")
 
 
 # Просмотр выполненных задач для администратора
