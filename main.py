@@ -596,10 +596,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-# import sqlite3
-# conn = sqlite3.connect("tasks.db")
-# cursor = conn.cursor()
-# cursor.execute("SELECT id FROM users LIMIT 1")
-# first_row = cursor.fetchone()
-# cursor.execute("UPDATE users SET role = ? WHERE id = ?", ("admin", first_row[0]))
-# conn.commit()
