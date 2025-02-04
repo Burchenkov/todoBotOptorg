@@ -422,7 +422,8 @@ async def process_task_description(message: types.Message, state: FSMContext):
 
     await notify_admins(title, description, department)
     await state.clear()
-    await message.answer(data.get("department") == "manager" if "Задача успешно добавлена и уведомление отправлено администраторам!" else "")
+    if data.get("department") == "manager":
+        await message.answer("Задача успешно добавлена и уведомление отправлено администраторам!")
 
 
 
